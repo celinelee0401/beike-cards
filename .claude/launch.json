@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "beike-cards", "runtimeExecutable": "python3", "runtimeArgs": ["-m", "http.server", "5180", "--bind", "127.0.0.1"], "port": 5180 }
+  ]
+}
