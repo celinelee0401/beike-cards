@@ -2,6 +2,7 @@
 
 import { store, children, newBoard } from './store.js';
 import { db } from './db.js';
+import { drawInk } from './ink.js';
 import {
   $, uid, loadBitmap, canvasToBlob, saveFile, safeFilename, blobToDataURL, dataURLToBlob,
   linkPoints, boundsOf, IMAGE_PAD,
@@ -55,7 +56,13 @@ function drawArrowHead(ctx, from, to, size) {
 export async function renderToCanvas(containerId, { maxSide = 6000, ratio = 2 } = {}) {
   const b = store.board;
   const kids = children(containerId);
-  const box = boundsOf(kids);
+  const strokes = b.ink?.[containerId ?? 'root']?.strokes || [];
+  const inkRects = strokes.flatMap((st) => {
+    const xs = st.p.filter((_, i) => i % 2 === 0), ys = st.p.filter((_, i) => i % 2 === 1);
+    const x = Math.min(...xs) - st.w, y = Math.min(...ys) - st.w;
+    return [{ x, y, w: Math.max(...xs) + st.w - x, h: Math.max(...ys) + st.w - y }];
+  });
+  const box = boundsOf([...kids, ...inkRects]);
   if (!box) return null;
   const pad = 48;
   const W = box.w + pad * 2, H = box.h + pad * 2;
@@ -128,6 +135,13 @@ export async function renderToCanvas(containerId, { maxSide = 6000, ratio = 2 } 
         if (bmp.close) bmp.close();
       }
     }
+    if (n.ink?.strokes?.length) {
+      ctx.save();
+      ctx.translate(n.x, n.y);
+      ctx.scale(n.w / n.ink.w, n.h / n.ink.h);
+      drawInk(ctx, n.ink.strokes);
+      ctx.restore();
+    }
     if (counts[n.id]) {
       const label = `▣ ${counts[n.id]}`;
       ctx.font = `bold 14px ${FONT}`;
@@ -141,6 +155,7 @@ export async function renderToCanvas(containerId, { maxSide = 6000, ratio = 2 } 
     }
     ctx.restore();
   }
+  drawInk(ctx, strokes);
   return canvas;
 }
 

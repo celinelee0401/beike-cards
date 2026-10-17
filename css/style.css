@@ -87,7 +87,15 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 }
 #viewport.drop-files { box-shadow: inset 0 0 0 4px var(--accent); }
 #world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; --inv: 1; }
-#links { position: absolute; overflow: visible; pointer-events: none; }
+#links { position: absolute; overflow: visible; pointer-events: none; z-index: 0; }
+#cards { position: absolute; left: 0; top: 0; z-index: 1; }
+#ink-layer { position: absolute; z-index: 2; pointer-events: none; overflow: visible; }
+#ink-layer path, .card-ink path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.card-ink { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: hidden; border-radius: inherit; }
+body.pen-on #viewport, body.pen-on #viewer-stage { cursor: crosshair; }
+body.pen-on .card { cursor: crosshair; }
+.tb.on { background: var(--accent); color: #fff; }
+.tb.on:hover:not(:disabled) { background: var(--accent); }
 #links .link-line { stroke: var(--line); stroke-width: 3; fill: none; stroke-linecap: round; }
 #links .link-line.selected { stroke: var(--accent); stroke-width: 5; }
 #links .link-hit { stroke: transparent; stroke-width: 26; fill: none; pointer-events: stroke; cursor: pointer; }
@@ -224,10 +232,15 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
   padding: 40px 48px; font-size: clamp(26px, 4vw, 60px); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere;
 }
 #viewer-close { position: absolute; right: max(16px, env(safe-area-inset-right)); top: max(16px, env(safe-area-inset-top)); }
+#viewer-pen { position: absolute; left: max(16px, env(safe-area-inset-left)); top: max(16px, env(safe-area-inset-top)); }
+#viewer-pen.on { background: #fff; color: var(--ink); }
+.viewer-card { position: relative; flex: none; border-radius: 12px; overflow: hidden; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4); }
+.viewer-card > .card { left: 0; top: 0; transform-origin: 0 0; cursor: default; box-shadow: none; }
 #viewer .nav { position: absolute; top: 50%; transform: translateY(-50%); width: 56px; height: 56px; }
 #viewer-prev { left: max(12px, env(safe-area-inset-left)); }
 #viewer-next { right: max(12px, env(safe-area-inset-right)); }
 #viewer .nav:disabled { opacity: 0.15; }
+body.pen-on #viewer-count { bottom: calc(max(16px, env(safe-area-inset-bottom)) + 70px); }
 #viewer-count {
   position: absolute; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%);
   background: rgba(255, 255, 255, 0.14); padding: 6px 14px; border-radius: 999px; font-size: 14px; font-variant-numeric: tabular-nums;
@@ -254,6 +267,24 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 #crop-box span[data-h="sw"] { left: -6px; bottom: -6px; border-right: 0; border-top: 0; cursor: nesw-resize; }
 #crop-box span[data-h="se"] { right: -6px; bottom: -6px; border-left: 0; border-top: 0; cursor: nwse-resize; }
 .editor-tip { margin: 0; padding: 10px 12px max(12px, env(safe-area-inset-bottom)); text-align: center; color: rgba(255, 255, 255, 0.7); font-size: 13px; }
+
+/* 手寫工具列 */
+#pen-bar {
+  position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 150;
+  display: flex; align-items: center; gap: 6px; padding: 6px; max-width: calc(100% - 16px); overflow-x: auto; scrollbar-width: none;
+  background: var(--ink); color: #fff; border-radius: 16px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+}
+#pen-bar::-webkit-scrollbar { display: none; }
+.pb-group { display: flex; align-items: center; gap: 4px; padding: 0 6px; border-right: 1px solid rgba(255, 255, 255, 0.15); flex: none; }
+.pb-group.dim { opacity: 0.4; }
+.pb-tool { border: 0; background: none; color: #fff; padding: 10px 12px; min-height: 44px; border-radius: 10px; font-size: 15px; white-space: nowrap; }
+.pb-tool.on { background: #fff; color: var(--ink); font-weight: 600; }
+.pb-color { width: 32px; height: 32px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.35); padding: 0; flex: none; }
+.pb-color.on { border-color: #fff; box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.35); }
+.pb-size { width: 40px; height: 44px; border: 0; background: none; border-radius: 10px; display: grid; place-items: center; flex: none; }
+.pb-size span { display: block; border-radius: 50%; background: #fff; }
+.pb-size.on { background: rgba(255, 255, 255, 0.18); }
+.pb-done { border: 0; background: var(--accent); color: #fff; font-weight: 600; padding: 10px 16px; min-height: 44px; border-radius: 10px; flex: none; margin-left: 2px; }
 
 /* ---------- 對話框與提示 ---------- */
 

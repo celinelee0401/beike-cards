@@ -1,7 +1,12 @@
 // 對話框、全螢幕檢視、圖片裁切旋轉
 
-import { children, commit, node } from './store.js';
-import { db, imageURL } from './db.js';
+import { children, commit, begin, end, node } from './store.js';
+import { fillCard } from './view.js';
+import {
+  pen, setPen, onPenChange, isInkInput, startStroke, eraseIn, eraserRadius, cardInkMapper,
+  ensureCardInk, ensureCardInkSvg, cardInkSvg, fillInk, newInkVersion,
+} from './ink.js';
+import { db } from './db.js';
 import { $, h, clamp, uid, toast, loadBitmap, normalizeImage, readingOrder, IMAGE_PAD } from './util.js';
 
 // ---------- 對話框 ----------
@@ -84,49 +89,128 @@ let vs = null;
 export function openViewer(id) {
   const n = node(id);
   if (!n) return;
-  const list = readingOrder(children(n.parent));
-  vs = { list, idx: Math.max(0, list.findIndex((k) => k.id === id)) };
+  const ids = readingOrder(children(n.parent)).map((k) => k.id);
+  vs = { ids, idx: Math.max(0, ids.indexOf(id)) };
   viewer.hidden = false;
   showViewer();
 }
 
+const contentSig = (n) => [n.type, n.text, n.imageId, n.color, n.fontSize, n.w, n.h].join('|');
+
+// 把卡片原樣放大到填滿螢幕（文字、照片、筆跡比例都和畫布上一樣）
 function showViewer() {
-  const n = vs.list[vs.idx];
-  vStage.replaceChildren();
-  if (n.type === 'image') {
-    const img = h('img', { class: 'viewer-img', alt: '' });
-    imageURL(n.imageId).then((u) => { if (u) img.src = u; });
-    vStage.append(img);
-  } else {
-    vStage.append(h('div', { class: 'viewer-text', style: { background: n.color || '#fff' } }, n.text || ''));
-  }
-  vCount.textContent = `${vs.idx + 1} / ${vs.list.length}`;
+  const n = node(vs.ids[vs.idx]);
+  if (!n) { closeViewer(); return; }
+  const narrow = innerWidth <= 760;
+  const availW = innerWidth - (narrow ? 24 : 160);
+  const availH = innerHeight - (narrow ? 170 : 110);
+  const s = Math.min(availW / n.w, availH / n.h);
+  const card = h('div', { class: 'card' + (n.type === 'image' ? ' is-image' : '') });
+  Object.assign(card.style, { width: n.w + 'px', height: n.h + 'px', background: n.color || '#fff', transform: `scale(${s})` });
+  fillCard(card, n);
+  const wrap = h('div', { class: 'viewer-card', style: { width: n.w * s + 'px', height: n.h * s + 'px' } }, card);
+  vStage.replaceChildren(wrap);
+  vs.card = card;
+  vs.sig = contentSig(n);
+  vCount.textContent = `${vs.idx + 1} / ${vs.ids.length}`;
   vPrev.disabled = vs.idx === 0;
-  vNext.disabled = vs.idx === vs.list.length - 1;
+  vNext.disabled = vs.idx === vs.ids.length - 1;
+}
+
+// 資料變了（寫字、復原）時更新畫面；只有筆跡變了就只換筆跡，照片不會閃
+export function refreshViewer() {
+  if (!vs) return;
+  const n = node(vs.ids[vs.idx]);
+  if (!n) { closeViewer(); return; }
+  if (contentSig(n) !== vs.sig) { showViewer(); return; }
+  const svg = vs.card.querySelector(':scope > .card-ink');
+  if (n.ink?.strokes?.length) {
+    if (svg) fillInk(svg, n.ink.strokes); else vs.card.append(cardInkSvg(n.ink));
+  } else svg?.remove();
 }
 
 function stepViewer(d) {
   if (!vs) return;
-  const i = clamp(vs.idx + d, 0, vs.list.length - 1);
+  const i = clamp(vs.idx + d, 0, vs.ids.length - 1);
   if (i !== vs.idx) { vs.idx = i; showViewer(); }
 }
-export function closeViewer() { viewer.hidden = true; vs = null; vStage.replaceChildren(); }
+export function closeViewer() {
+  viewer.hidden = true;
+  vs = null;
+  vStage.replaceChildren();
+}
 
 vPrev.addEventListener('click', () => stepViewer(-1));
 vNext.addEventListener('click', () => stepViewer(1));
 $('#viewer-close').addEventListener('click', closeViewer);
-let swipe = null;
-vStage.addEventListener('pointerdown', (e) => { swipe = { x: e.clientX, y: e.clientY }; });
-vStage.addEventListener('pointerup', (e) => {
-  if (!swipe) return;
-  const dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
-  swipe = null;
-  if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) stepViewer(dx < 0 ? 1 : -1);
+$('#viewer-pen').addEventListener('click', () => setPen(!pen.on));
+onPenChange(() => $('#viewer-pen').classList.toggle('on', pen.on));
+window.addEventListener('resize', () => { if (vs) showViewer(); });
+
+// 在全螢幕上寫字；沒在寫字時，左右滑動換下一張
+let vg = null;
+vStage.addEventListener('pointerdown', (e) => {
+  if (!vs || vg?.ink) return;
+  if (isInkInput(e) && vs.card) {
+    const n = node(vs.ids[vs.idx]);
+    if (!n) return;
+    try { vStage.setPointerCapture(e.pointerId); } catch {}
+    const token = begin();
+    if (pen.tool === 'eraser') {
+      vg = { ink: true, erase: true, token, n };
+      eraseViewer(e);
+    } else {
+      ensureCardInk(n);
+      const svg = ensureCardInkSvg(n, vs.card);
+      const m = cardInkMapper(n, svg);
+      vg = { ink: true, token, n, stroke: startStroke(svg, m.toLocal, m.unitPx) };
+      vg.stroke.add(e.clientX, e.clientY);
+    }
+    return;
+  }
+  vg = { x: e.clientX, y: e.clientY };
 });
+
+function eraseViewer(e) {
+  const n = vg.n;
+  if (!n.ink?.strokes?.length) return;
+  const svg = vs.card.querySelector(':scope > .card-ink');
+  if (!svg) return;
+  const m = cardInkMapper(n, svg);
+  const q = m.toLocal(e.clientX, e.clientY);
+  if (eraseIn(n.ink, q.x, q.y, eraserRadius(m.unitPx))) fillInk(svg, n.ink.strokes);
+}
+
+vStage.addEventListener('pointermove', (e) => {
+  if (!vg?.ink) return;
+  if (vg.erase) { eraseViewer(e); return; }
+  const evs = e.getCoalescedEvents?.() || [];
+  for (const ce of evs.length ? evs : [e]) vg.stroke.add(ce.clientX, ce.clientY);
+});
+
+function endViewerGesture(e, cancelled) {
+  const g = vg;
+  vg = null;
+  if (!g) return;
+  if (g.ink) {
+    if (g.stroke) {
+      const s = g.stroke.finish();
+      if (s && !cancelled) { g.n.ink.strokes.push(s); g.n.ink.v = newInkVersion(); }
+    }
+    end(g.token);
+    refreshViewer();
+    return;
+  }
+  if (cancelled) return;
+  const dx = e.clientX - g.x, dy = e.clientY - g.y;
+  if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) stepViewer(dx < 0 ? 1 : -1);
+}
+vStage.addEventListener('pointerup', (e) => endViewerGesture(e, false));
+vStage.addEventListener('pointercancel', (e) => endViewerGesture(e, true));
 
 export function handleViewerKey(e) {
   if (viewer.hidden) return false;
-  if (e.key === 'Escape') closeViewer();
+  if (e.key === 'Escape') { if (pen.on) setPen(false); else closeViewer(); }
   else if (e.key === 'ArrowLeft') stepViewer(-1);
   else if (e.key === 'ArrowRight' || e.key === ' ') stepViewer(1);
   return true;

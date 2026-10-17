@@ -6,11 +6,16 @@ import {
 } from './store.js';
 import { db, imageURL } from './db.js';
 import { $, h, clamp, uid, toast, linkPoints, boundsOf, imageCardSize, IMAGE_PAD } from './util.js';
+import {
+  pen, isInkInput, startStroke, eraseIn, eraserRadius, cardInkMapper, ensureCardInk, ensureCardInkSvg,
+  cardInkSvg, fillInk, newInkVersion, onPenChange,
+} from './ink.js';
 
 const viewport = $('#viewport');
 const world = $('#world');
 const cardsLayer = $('#cards');
 const linksSvg = $('#links');
+const inkLayer = $('#ink-layer');
 const floatBar = $('#float-toolbar');
 const hintEl = $('#hint');
 const emptyHint = $('#empty-hint');
@@ -54,6 +59,7 @@ export function applyTransform() {
   viewport.style.backgroundSize = `${g}px ${g}px`;
   viewport.style.backgroundPosition = `${view.x}px ${view.y}px`;
   zoomLabel.textContent = Math.round(view.scale * 100) + '%';
+  layoutInkLayer();
   positionFloatBar();
 }
 
@@ -165,6 +171,7 @@ export function render() {
   for (const [id, el] of elMap) if (!keep.has(id)) { el.remove(); elMap.delete(id); }
 
   renderLinks();
+  renderCanvasInk();
   renderCrumbs();
   emptyHint.hidden = kids.length > 0;
   emptyHint.textContent = view.container
@@ -180,18 +187,35 @@ function paintPos(el, n) {
   el.style.height = n.h + 'px';
 }
 
+const hasInk = (n) => !!n.ink?.strokes?.length;
+
 function paintCard(el, n, kidCount) {
   paintPos(el, n);
   el.style.background = n.color || '#fff';
   el.style.zIndex = n.z || 0;
   el.classList.toggle('is-image', n.type === 'image');
   if (view.editing?.id === n.id) return;
-  const sig = [n.type, n.text, n.imageId, n.fontSize, kidCount].join('|');
-  if (el.dataset.sig === sig) return;
+  const sig = [n.type, n.text, n.imageId, n.fontSize, kidCount, hasInk(n)].join('|');
+  const inkSig = hasInk(n) ? `${n.ink.v}|${n.ink.strokes.length}` : '';
+  if (el.dataset.sig === sig) {
+    if (el.dataset.ink !== inkSig) {
+      el.dataset.ink = inkSig;
+      el.querySelector(':scope > .card-ink')?.remove();
+      if (inkSig) ensureCardInkSvg(n, el);
+    }
+    return;
+  }
   el.dataset.sig = sig;
+  el.dataset.ink = inkSig;
+  fillCard(el, n, kidCount);
+}
+
+// 卡片內容（畫布和全螢幕共用）
+export function fillCard(el, n, kidCount = 0) {
   el.replaceChildren();
   if (n.type === 'text') {
-    const t = h('div', { class: 'card-text' + (n.text ? '' : ' placeholder') }, n.text || '（空白卡片）');
+    const empty = !n.text && !hasInk(n);
+    const t = h('div', { class: 'card-text' + (empty ? ' placeholder' : '') }, n.text || (empty ? '（空白卡片）' : ''));
     t.style.fontSize = (n.fontSize || DEFAULT_FONT) + 'px';
     el.append(t);
   } else {
@@ -199,11 +223,102 @@ function paintCard(el, n, kidCount) {
     imageURL(n.imageId).then((u) => { if (u) img.src = u; });
     el.append(img);
   }
+  if (hasInk(n)) el.append(cardInkSvg(n.ink));
   if (kidCount) {
     el.append(h('span', { class: 'badge', title: '打開這張卡片' },
       h('span', { class: 'badge-icon', html: STACK_ICON }), String(kidCount)));
   }
 }
+
+// ---------- 畫布上的手寫 ----------
+
+const inkKey = () => view.container ?? 'root';
+let inkBox = null;
+
+function canvasInk(create = false) {
+  const b = store.board;
+  if (create) {
+    b.ink ||= {};
+    b.ink[inkKey()] ||= { v: newInkVersion(), strokes: [] };
+  }
+  return b.ink?.[inkKey()] || null;
+}
+
+function strokeBox(strokes) {
+  let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+  for (const s of strokes) {
+    for (let i = 0; i < s.p.length; i += 2) {
+      x1 = Math.min(x1, s.p[i] - s.w); y1 = Math.min(y1, s.p[i + 1] - s.w);
+      x2 = Math.max(x2, s.p[i] + s.w); y2 = Math.max(y2, s.p[i + 1] + s.w);
+    }
+  }
+  return x1 === Infinity ? null : { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+}
+
+function renderCanvasInk() {
+  const ink = canvasInk();
+  const sig = `${inkKey()}|${ink?.v || ''}|${ink?.strokes?.length || 0}`;
+  if (inkLayer.dataset.sig !== sig) {
+    inkLayer.dataset.sig = sig;
+    fillInk(inkLayer, ink?.strokes);
+    inkBox = ink?.strokes?.length ? strokeBox(ink.strokes) : null;
+  }
+  layoutInkLayer();
+}
+
+// 筆跡圖層只蓋住「筆跡範圍＋目前畫面」，避免做出超大的圖層
+function layoutInkLayer() {
+  if (!store.board) return;
+  const vr = visibleRect();
+  const boxes = [vr, inkBox].filter(Boolean);
+  const x1 = Math.min(...boxes.map((b) => b.x)) - 50, y1 = Math.min(...boxes.map((b) => b.y)) - 50;
+  const x2 = Math.max(...boxes.map((b) => b.x + b.w)) + 50, y2 = Math.max(...boxes.map((b) => b.y + b.h)) + 50;
+  Object.assign(inkLayer.style, { left: x1 + 'px', top: y1 + 'px', width: x2 - x1 + 'px', height: y2 - y1 + 'px' });
+  inkLayer.setAttribute('viewBox', `${x1} ${y1} ${x2 - x1} ${y2 - y1}`);
+}
+
+function eraseAtCanvas(cx, cy) {
+  const p = toWorld(cx, cy);
+  const r = eraserRadius(view.scale);
+  let changed = eraseIn(canvasInk(), p.x, p.y, r);
+  for (const n of children(view.container)) {
+    if (!hasInk(n) || p.x < n.x - r || p.x > n.x + n.w + r || p.y < n.y - r || p.y > n.y + n.h + r) continue;
+    const sx = n.ink.w / n.w, sy = n.ink.h / n.h;
+    if (eraseIn(n.ink, (p.x - n.x) * sx, (p.y - n.y) * sy, r * sx)) changed = true;
+  }
+  if (changed) render();
+  return changed;
+}
+
+function beginInk(e) {
+  const cardEl = e.target.closest('.card');
+  const n = cardEl && node(cardEl.dataset.id);
+  const token = begin();
+  if (n) {
+    ensureCardInk(n);
+    const svg = ensureCardInkSvg(n, cardEl);
+    const m = cardInkMapper(n, svg);
+    return { type: 'ink', id: n.id, token, stroke: startStroke(svg, m.toLocal, m.unitPx) };
+  }
+  layoutInkLayer();
+  return { type: 'ink', id: null, token, stroke: startStroke(inkLayer, toWorld, view.scale) };
+}
+
+function finishInk(g) {
+  const s = g.stroke.finish();
+  if (s) {
+    const target = g.id ? node(g.id)?.ink : canvasInk(true);
+    if (target) { target.strokes.push(s); target.v = newInkVersion(); }
+  }
+  end(g.token);
+  render();
+}
+
+onPenChange(() => {
+  finishEdit();
+  if (pen.on) { view.sel = null; view.linkFrom = null; }
+  if (store.board) updateSelectionUI();
+});
 const STACK_ICON = '<svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V6a2 2 0 0 1 2-2h10"/></svg>';
 
 const MARKERS = `<defs>
@@ -268,16 +383,16 @@ function updateSelectionUI() {
     el.classList.toggle('link-source', id === view.linkFrom);
   }
   const selEl = selId && elMap.get(selId);
-  if (selEl && !view.linkFrom && !view.editing) selEl.append(handle); else handle.remove();
+  if (selEl && !view.linkFrom && !view.editing && !pen.on) selEl.append(handle); else handle.remove();
 
   hintEl.hidden = !view.linkFrom;
   if (view.linkFrom) hintEl.textContent = '點另一張卡片來連線 · 點空白處取消';
 
-  const show = view.sel && !view.linkFrom && !view.editing;
+  const show = view.sel && !view.linkFrom && !view.editing && !pen.on;
   floatBar.hidden = !show;
   if (!show) { barKey = ''; return; }
   const n = selId ? node(selId) : null;
-  const key = `${view.sel.kind}:${view.sel.id}:${n?.type}:${view.showColors}:${view.container}`;
+  const key = `${view.sel.kind}:${view.sel.id}:${n?.type}:${view.showColors}:${view.container}:${n ? hasInk(n) : ''}`;
   if (key !== barKey) { barKey = key; buildFloatBar(); }
   positionFloatBar();
 }
@@ -295,6 +410,7 @@ function buildFloatBar() {
       : [btn('view', '全螢幕'), btn('crop', '裁切旋轉')];
     items.push(btn('color', '顏色', view.showColors ? 'on' : ''), btn('link', '連線'),
       btn('camInto', '拍照放進'), btn('open', '打開'), btn('dup', '複製'));
+    if (hasInk(n)) items.push(btn('clearInk', '清除筆跡'));
     if (view.container) items.push(btn('out', '移到上一層'));
     items.push(btn('del', '刪除', 'danger'));
   }
@@ -386,6 +502,7 @@ function runAction(act) {
     case 'open': goTo(id); break;
     case 'dup': duplicate(id); break;
     case 'out': moveOut(id); break;
+    case 'clearInk': commit((b) => { delete b.nodes[id].ink; }); toast('已清除筆跡，可按「復原」救回'); break;
     case 'del': deleteSelected(); break;
   }
 }
@@ -413,7 +530,7 @@ function duplicate(id) {
     const z = topZ(src.parent) + 1;
     for (const i of ids) {
       const o = b.nodes[i];
-      const c = { ...o, id: map[i], parent: i === id ? o.parent : map[o.parent] };
+      const c = { ...structuredClone(o), id: map[i], parent: i === id ? o.parent : map[o.parent] };
       if (i === id) { c.x += 30; c.y += 30; c.z = z; }
       b.nodes[c.id] = c;
     }
@@ -573,6 +690,25 @@ let lastTap = { id: null, t: 0, x: 0, y: 0 };
 viewport.addEventListener('pointerdown', (e) => {
   if (e.target.closest('#float-toolbar, .zoom-ctrl, #crumbs, textarea')) return;
   if (e.pointerType === 'mouse' && e.button !== 0) return;
+  if (gesture?.type === 'ink' || gesture?.type === 'erase') return;   // 寫字時忽略手掌、其他手指
+
+  if (isInkInput(e)) {
+    // Apple Pencil 一碰到就取消手指／手掌造成的移動
+    if (gesture?.token) end(gesture.token);
+    if (gesture?.type === 'card') clearDropTarget(gesture);
+    pointers.clear();
+    if (view.editing) finishEdit();
+    try { viewport.setPointerCapture(e.pointerId); } catch {}
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pen.tool === 'eraser') {
+      gesture = { type: 'erase', token: begin() };
+      eraseAtCanvas(e.clientX, e.clientY);
+    } else {
+      gesture = beginInk(e);
+      gesture.stroke.add(e.clientX, e.clientY);
+    }
+    return;
+  }
   const endedEdit = !!view.editing;
   if (endedEdit) finishEdit();
   try { viewport.setPointerCapture(e.pointerId); } catch {}
@@ -616,6 +752,13 @@ viewport.addEventListener('pointermove', (e) => {
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   const g = gesture;
   if (!g || g.type === 'none') return;
+
+  if (g.type === 'ink') {
+    const evs = e.getCoalescedEvents?.() || [];
+    for (const ce of evs.length ? evs : [e]) g.stroke.add(ce.clientX, ce.clientY);
+    return;
+  }
+  if (g.type === 'erase') { eraseAtCanvas(e.clientX, e.clientY); return; }
 
   if (g.type === 'pinch') {
     const [a, b] = [...pointers.values()];
@@ -706,6 +849,13 @@ function onPointerEnd(e, cancelled) {
   pointers.delete(e.pointerId);
   const g = gesture;
   if (!g) return;
+  if (g.type === 'ink' || g.type === 'erase') {
+    gesture = null;
+    pointers.clear();
+    if (g.type === 'ink') { if (cancelled) { g.stroke.cancel(); end(g.token); } else finishInk(g); }
+    else end(g.token);
+    return;
+  }
   if (g.type === 'pinch') {
     if (pointers.size < 2) {
       gesture = pointers.size ? { type: 'none' } : null;
@@ -831,6 +981,7 @@ viewport.addEventListener('gestureend', (e) => e.preventDefault());
 export function handleBoardKey(e) {
   const mod = e.metaKey || e.ctrlKey;
   if (e.key === 'Escape') {
+    if (pen.on) return false;
     if (view.linkFrom) { view.linkFrom = null; updateSelectionUI(); }
     else if (view.sel) select(null);
     else goUp();

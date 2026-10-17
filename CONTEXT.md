@@ -11,6 +11,8 @@
 | 拍照放到畫布 | 拍下的照片變成新卡片，放在目前看的這一層（需求 A） | `addPhoto(img, view.container)` |
 | 拍照放進卡片 | 拍下的照片放進選取的那張卡片裡面（需求 B） | `addPhoto(img, 卡片 id)` |
 | 全螢幕 | 把一張卡片放大投影，左右切換同一層的其他卡片 | `openViewer` |
+| 手寫／筆跡 | 用 Pencil 或手指畫的線；卡片上的跟著卡片走，畫布上的固定在畫布 | `node.ink`、`board.ink[容器]` |
+| 螢光筆 | 半透明的粗筆，用來畫重點 | `pen.tool = 'marker'` |
 | 備份檔 | 一份筆記連同照片的 JSON 檔（`.beike.json`），可在別台設備匯入 | `exportBackup` / `importBackup` |
 
 ## 使用情境

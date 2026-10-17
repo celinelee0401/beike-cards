@@ -1,8 +1,9 @@
 // 目前開啟的筆記、復原／重做、自動存檔
 //
 // 資料結構（以後要多台同步時，以 id 和 updatedAt 為基礎合併）：
-// board = { id, title, createdAt, updatedAt, nodes: {id: node}, links: [link], views: {容器id: {x,y,scale}}, thumb }
-// node  = { id, parent: null | 卡片id, type: 'text'|'image', x, y, w, h, z, color, text, fontSize, imageId }
+// board = { id, title, createdAt, updatedAt, nodes: {id: node}, links: [link], views: {容器id: {x,y,scale}}, ink: {容器id: 筆跡}, thumb }
+// node  = { id, parent: null | 卡片id, type: 'text'|'image', x, y, w, h, z, color, text, fontSize, imageId, ink }
+//         ink 是卡片上的手寫筆跡，格式見 ink.js
 //         parent 是 null 代表在畫布上；是某張卡片的 id 代表「放在那張卡片裡面」
 // link  = { id, from, to, arrow: 'end'|'both'|'none' }
 
@@ -18,7 +19,7 @@ let saveTimer = null;
 
 export function newBoard(title = '未命名筆記') {
   const t = Date.now();
-  return { id: uid(), title, createdAt: t, updatedAt: t, nodes: {}, links: [], views: {} };
+  return { id: uid(), title, createdAt: t, updatedAt: t, nodes: {}, links: [], views: {}, ink: {} };
 }
 
 export function setBoard(b) {
@@ -26,13 +27,14 @@ export function setBoard(b) {
     b.nodes ||= {};
     b.links ||= [];
     b.views ||= {};
+    b.ink ||= {};
   }
   store.board = b;
   undoStack = [];
   redoStack = [];
 }
 
-const snapshot = () => JSON.stringify({ nodes: store.board.nodes, links: store.board.links });
+const snapshot = () => JSON.stringify({ nodes: store.board.nodes, links: store.board.links, ink: store.board.ink });
 
 // begin() 記下修改前的狀態；end() 比對後放進復原紀錄
 export const begin = () => snapshot();
@@ -66,6 +68,7 @@ function restore(s) {
   const o = JSON.parse(s);
   store.board.nodes = o.nodes;
   store.board.links = o.links;
+  store.board.ink = o.ink || {};
   changed();
 }
 
@@ -122,7 +125,7 @@ export function addNode(p) {
 export function removeNodes(ids) {
   const set = new Set(ids);
   for (const id of ids) for (const d of descendants(id)) set.add(d);
-  for (const id of set) delete store.board.nodes[id];
+  for (const id of set) { delete store.board.nodes[id]; delete store.board.ink?.[id]; }
   store.board.links = store.board.links.filter((l) => !set.has(l.from) && !set.has(l.to));
   return set.size;
 }

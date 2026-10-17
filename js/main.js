@@ -10,8 +10,9 @@ import {
 import { openCamera, pickPhotos, handleCameraKey, cameraOpen } from './camera.js';
 import {
   askText, confirmBox, chooseAction, openViewer, openEditor, handleViewerKey, handleEditorKey,
-  anyOverlayOpen, dialogOpen,
+  anyOverlayOpen, dialogOpen, refreshViewer,
 } from './modals.js';
+import { pen, setPen, onPenChange } from './ink.js';
 import { exportPNG, printView, exportBackup, importBackup, makeThumb } from './export.js';
 
 const homeEl = $('#home');
@@ -102,6 +103,7 @@ async function openBoard(b) {
 
 async function closeBoard() {
   if (!store.board) return;
+  if (pen.on) setPen(false);
   finishEdit();
   saveCurrentView();
   try { store.board.thumb = await makeThumb(); } catch {}
@@ -163,6 +165,8 @@ $('#btn-batch').addEventListener('click', async () => {
   const paras = splitParagraphs(t);
   if (paras.length) toast(`已新增 ${addTextCards(paras)} 張卡片`);
 });
+$('#btn-pen').addEventListener('click', () => setPen(!pen.on));
+onPenChange(() => $('#btn-pen').classList.toggle('on', pen.on));
 $('#btn-undo').addEventListener('click', () => { finishEdit(); undo(); });
 $('#btn-redo').addEventListener('click', () => { finishEdit(); redo(); });
 $('#btn-export').addEventListener('click', async () => {
@@ -189,7 +193,7 @@ function updateUndo() {
   $('#btn-undo').disabled = !canUndo();
   $('#btn-redo').disabled = !canRedo();
 }
-onChange(() => { render(); updateUndo(); });
+onChange(() => { render(); updateUndo(); refreshViewer(); });
 
 const splitParagraphs = (t) => t.split(/\n\s*\n/).map((s) => s.replace(/^\s+|\s+$/g, '')).filter(Boolean);
 
@@ -201,6 +205,7 @@ document.addEventListener('keydown', (e) => {
   if (dialogOpen()) return;
   if (handleCameraKey(e) || handleViewerKey(e) || handleEditorKey(e)) return;
   if (boardEl.hidden || typing(document.activeElement)) return;
+  if (e.key === 'Escape' && pen.on) { setPen(false); return; }
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
